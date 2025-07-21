@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: ai-agent-backend
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: ""
+    startCommand: "python app.py"
+    autoDeploy: true
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: JWT_SECRET_KEY
+        value: your-super-secret-key
+      - key: OPENAI_API_KEY
+        value: sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      - key: TELEGRAM_BOT_TOKEN
+        value: 7411580150:AAFRN8a0hFY5DSA4SkFKDFocjMkYnVFjQ_Q
+      - key: TELEGRAM_CHAT_ID
+        value: 7491215797
+      - key: DATABASE_URL
+        value: sqlite:///ai_agent_system.db
