@@ -1,196 +1,212 @@
 #!/usr/bin/env python3
 """
-AI Agent System - Flask Backend Application
-Main entry point for the AI Agent System backend
-Compatible with Python 3.10 and Windows 10
+AI Agent System - Flask Backend Application.
+
+Security-sensitive configuration is loaded from environment variables and
+validated before the Flask application is created.
 """
 
 import os
 import sys
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, send_from_directory
-from flask_sqlalchemy import SQLAlchemy
-from flask_jwt_extended import JWTManager
-from flask_cors import CORS
-from dotenv import load_dotenv
 
-# Load environment variables
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request, send_from_directory
+from flask_cors import CORS
+from flask_jwt_extended import JWTManager
+
 load_dotenv()
 
 # Add src directory to Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
-# Initialize Flask app
-app = Flask(__name__, static_folder='static')
-
-# Configuration
-app.config['SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'your-secret-key-change-in-production')
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///ai_agent_system.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'your-secret-key-change-in-production')
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
-
-# Initialize database with app
+from src.config import load_settings
 from src.models import db
+
+settings = load_settings()
+
+app = Flask(__name__, static_folder="static")
+app.config["SECRET_KEY"] = settings.secret_key
+app.config["SQLALCHEMY_DATABASE_URI"] = settings.database_url
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["JWT_SECRET_KEY"] = settings.jwt_secret_key
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(seconds=settings.jwt_access_token_expires)
+app.config["ALLOW_PUBLIC_REGISTRATION"] = settings.allow_public_registration
+
 db.init_app(app)
-
-# Initialize other extensions
 jwt = JWTManager(app)
-CORS(app, origins="*")
+CORS(
+    app,
+    origins=list(settings.cors_origins),
+    supports_credentials=settings.cors_supports_credentials,
+)
 
-# Import models after db initialization
-from src.models.user import User
 from src.models.task import Task
-
-# Import routes
+from src.models.user import User
 from src.routes.auth import auth_bp
-from src.routes.tasks import tasks_bp
 from src.routes.chat import chat_bp
+from src.routes.tasks import tasks_bp
 from src.routes.telegram import telegram_bp
 
-# Register blueprints
-app.register_blueprint(auth_bp, url_prefix='/api/auth')
-app.register_blueprint(tasks_bp, url_prefix='/api/tasks')
-app.register_blueprint(chat_bp, url_prefix='/api/chat')
-app.register_blueprint(telegram_bp, url_prefix='/api/telegram')
+app.register_blueprint(auth_bp, url_prefix="/api/auth")
+app.register_blueprint(tasks_bp, url_prefix="/api/tasks")
+app.register_blueprint(chat_bp, url_prefix="/api/chat")
+app.register_blueprint(telegram_bp, url_prefix="/api/telegram")
 
-# Health check endpoint
-@app.route('/api/health')
+
+@app.before_request
+def protect_public_registration():
+    """Keep registration disabled by default and prevent client-selected admin roles."""
+
+    if request.method != "POST" or request.path != "/api/auth/register":
+        return None
+
+    if not app.config["ALLOW_PUBLIC_REGISTRATION"]:
+        return jsonify({
+            "status": "error",
+            "message": "Public registration is disabled.",
+        }), 403
+
+    payload = request.get_json(silent=True) or {}
+    requested_role = payload.get("role")
+    if requested_role not in (None, "team"):
+        return jsonify({
+            "status": "error",
+            "message": "Public registration can only create team accounts.",
+        }), 403
+
+    return None
+
+
+@app.after_request
+def add_security_headers(response):
+    """Apply inexpensive browser security headers to every response."""
+
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    return response
+
+
+@app.route("/api/health")
 def health_check():
-    """Health check endpoint"""
+    """Return non-sensitive service readiness information."""
+
     return jsonify({
-        'status': 'healthy',
-        'message': 'AI Agent System Backend is running',
-        'timestamp': datetime.utcnow().isoformat()
+        "status": "healthy",
+        "message": "AI Agent System Backend is running",
+        "timestamp": datetime.utcnow().isoformat(),
+        "environment": settings.environment,
+        "integrations": {
+            "openai_configured": bool(settings.openai_api_key),
+            "telegram_configured": settings.telegram_configured,
+        },
     })
 
-# Serve React frontend
-@app.route('/')
-def serve_frontend():
-    """Serve React frontend"""
-    return send_from_directory(app.static_folder, 'index.html')
 
-@app.route('/<path:path>')
+@app.route("/")
+def serve_frontend():
+    """Serve React frontend."""
+
+    return send_from_directory(app.static_folder, "index.html")
+
+
+@app.route("/<path:path>")
 def serve_static(path):
-    """Serve static files"""
+    """Serve static files."""
+
     return send_from_directory(app.static_folder, path)
 
+
 def initialize_database():
-    """Initialize database with sample data"""
+    """Create tables and optionally seed explicitly enabled development data."""
+
     with app.app_context():
         try:
-            # Create all tables
             db.create_all()
-            
-            # Check if admin user exists
-            admin_user = User.query.filter_by(username='admin').first()
-            if not admin_user:
-                # Create admin user
-                admin_user = User(
-                    username='admin',
-                    email='admin@aiagent.com',
-                    role='admin'
+
+            if not settings.allow_demo_data:
+                print("Database tables ready; demo data seeding is disabled.")
+                return
+
+            admin_user = User.query.filter_by(username="admin").first()
+            if admin_user:
+                print("Database already contains the demo admin user.")
+                return
+
+            admin_user = User(
+                username="admin",
+                email="admin@aiagent.local",
+                role="admin",
+            )
+            admin_user.set_password(settings.demo_admin_password)
+            db.session.add(admin_user)
+
+            team_members = [
+                {"username": "john_doe", "email": "john@aiagent.local"},
+                {"username": "jane_smith", "email": "jane@aiagent.local"},
+                {"username": "mike_wilson", "email": "mike@aiagent.local"},
+            ]
+            for member_data in team_members:
+                member = User(
+                    username=member_data["username"],
+                    email=member_data["email"],
+                    role="team",
                 )
-                admin_user.set_password('admin123')
-                db.session.add(admin_user)
-                
-                # Create team members
-                team_members = [
-                    {'username': 'john_doe', 'email': 'john@aiagent.com'},
-                    {'username': 'jane_smith', 'email': 'jane@aiagent.com'},
-                    {'username': 'mike_wilson', 'email': 'mike@aiagent.com'}
-                ]
-                
-                for member_data in team_members:
-                    member = User(
-                        username=member_data['username'],
-                        email=member_data['email'],
-                        role='team'
-                    )
-                    member.set_password('user123')
-                    db.session.add(member)
-                
-                # Create sample tasks
-                sample_tasks = [
-                    {
-                        'title': 'Setup Development Environment',
-                        'description': 'Configure development tools and environment for the project',
-                        'priority': 'high',
-                        'status': 'completed',
-                        'assigned_to': 2,  # john_doe
-                        'created_by': 1,   # admin
-                        'due_date': datetime.utcnow() - timedelta(days=1),
-                        'completed_at': datetime.utcnow() - timedelta(hours=2)
-                    },
-                    {
-                        'title': 'Design Database Schema',
-                        'description': 'Create comprehensive database schema for the AI Agent System',
-                        'priority': 'high',
-                        'status': 'in_progress',
-                        'assigned_to': 3,  # jane_smith
-                        'created_by': 1,   # admin
-                        'due_date': datetime.utcnow() + timedelta(days=2)
-                    },
-                    {
-                        'title': 'Implement User Authentication',
-                        'description': 'Build JWT-based authentication system with role management',
-                        'priority': 'urgent',
-                        'status': 'pending',
-                        'assigned_to': 4,  # mike_wilson
-                        'created_by': 1,   # admin
-                        'due_date': datetime.utcnow() + timedelta(days=3)
-                    },
-                    {
-                        'title': 'Create Task Management API',
-                        'description': 'Develop RESTful API endpoints for task CRUD operations',
-                        'priority': 'medium',
-                        'status': 'pending',
-                        'assigned_to': 2,  # john_doe
-                        'created_by': 1,   # admin
-                        'due_date': datetime.utcnow() + timedelta(days=5)
-                    },
-                    {
-                        'title': 'Integrate OpenAI GPT',
-                        'description': 'Implement AI-powered task generation using OpenAI API',
-                        'priority': 'medium',
-                        'status': 'pending',
-                        'assigned_to': 3,  # jane_smith
-                        'created_by': 1,   # admin
-                        'due_date': datetime.utcnow() + timedelta(days=7),
-                        'is_ai_generated': True,
-                        'ai_context': 'Generated based on project requirements analysis'
-                    }
-                ]
-                
-                for task_data in sample_tasks:
-                    task = Task(**task_data)
-                    db.session.add(task)
-                
-                db.session.commit()
-                
-                print("✅ Database initialized with sample data")
-                print("👤 Admin: admin / admin123")
-                print("👥 Team Members: john_doe, jane_smith, mike_wilson / user123")
-            else:
-                print("✅ Database already initialized")
-                
-        except Exception as e:
-            print(f"❌ Error initializing database: {e}")
+                member.set_password(settings.demo_user_password)
+                db.session.add(member)
+
+            db.session.flush()
+            users_by_name = {
+                user.username: user.id
+                for user in User.query.filter(User.username.in_([
+                    "admin", "john_doe", "jane_smith", "mike_wilson"
+                ])).all()
+            }
+
+            sample_tasks = [
+                {
+                    "title": "Setup Development Environment",
+                    "description": "Configure development tools and environment for the project",
+                    "priority": "high",
+                    "status": "completed",
+                    "assigned_to": users_by_name["john_doe"],
+                    "created_by": users_by_name["admin"],
+                    "due_date": datetime.utcnow() - timedelta(days=1),
+                    "completed_at": datetime.utcnow() - timedelta(hours=2),
+                },
+                {
+                    "title": "Design Database Schema",
+                    "description": "Create comprehensive database schema for the AI Agent System",
+                    "priority": "high",
+                    "status": "in_progress",
+                    "assigned_to": users_by_name["jane_smith"],
+                    "created_by": users_by_name["admin"],
+                    "due_date": datetime.utcnow() + timedelta(days=2),
+                },
+                {
+                    "title": "Implement User Authentication",
+                    "description": "Build JWT-based authentication system with role management",
+                    "priority": "urgent",
+                    "status": "pending",
+                    "assigned_to": users_by_name["mike_wilson"],
+                    "created_by": users_by_name["admin"],
+                    "due_date": datetime.utcnow() + timedelta(days=3),
+                },
+            ]
+            for task_data in sample_tasks:
+                db.session.add(Task(**task_data))
+
+            db.session.commit()
+            print("Development demo data initialized.")
+        except Exception:
             db.session.rollback()
+            raise
 
-if __name__ == '__main__':
-    # Initialize database
+
+if __name__ == "__main__":
     initialize_database()
-    
-    # Get configuration from environment
-    host = os.getenv('HOST', '0.0.0.0')
-    port = int(os.getenv('PORT', 5000))
-    debug = os.getenv('FLASK_ENV', 'development') == 'development'
-    
-    print(f"🚀 Starting AI Agent System Backend")
-    print(f"🌐 Server: http://{host}:{port}")
-    print(f"🔧 Debug mode: {debug}")
-    print(f"📊 Health check: http://{host}:{port}/api/health")
-    
-    app.run(host=host, port=port, debug=debug)
-
+    print("Starting AI Agent System Backend")
+    print(f"Server: http://{settings.host}:{settings.port}")
+    print(f"Debug mode: {settings.debug}")
+    app.run(host=settings.host, port=settings.port, debug=settings.debug)
