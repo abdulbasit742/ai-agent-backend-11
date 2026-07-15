@@ -4,19 +4,32 @@ services:
     env: python
     region: oregon
     plan: free
-    buildCommand: ""
-    startCommand: "python app.py"
+    rootDir: AI-AGENT-SYSTEM-FULL-2/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
     autoDeploy: true
     envVars:
       - key: FLASK_ENV
         value: production
+      - key: FLASK_DEBUG
+        value: "false"
+      - key: SECRET_KEY
+        sync: false
       - key: JWT_SECRET_KEY
-        value: your-super-secret-key
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: CORS_SUPPORTS_CREDENTIALS
+        value: "false"
+      - key: ALLOW_PUBLIC_REGISTRATION
+        value: "false"
+      - key: ALLOW_DEMO_DATA
+        value: "false"
       - key: OPENAI_API_KEY
-        value: sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+        sync: false
       - key: TELEGRAM_BOT_TOKEN
-        value: 7411580150:AAFRN8a0hFY5DSA4SkFKDFocjMkYnVFjQ_Q
-      - key: TELEGRAM_CHAT_ID
-        value: 7491215797
+        sync: false
+      - key: TELEGRAM_USER_ID
+        sync: false
       - key: DATABASE_URL
         value: sqlite:///ai_agent_system.db
