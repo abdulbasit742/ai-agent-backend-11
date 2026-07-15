@@ -1,0 +1,36 @@
+name: backend-security
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - feature/**
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Compile changed security surface
+        run: |
+          python -m compileall \
+            AI-AGENT-SYSTEM-FULL-2/backend/app.py \
+            AI-AGENT-SYSTEM-FULL-2/backend/src/config.py \
+            AI-AGENT-SYSTEM-FULL-2/backend/tests \
+            scripts/check_repository_security.py
+      - name: Run configuration tests
+        run: python -m unittest discover -s AI-AGENT-SYSTEM-FULL-2/backend/tests -v
+      - name: Check repository for committed secrets and unsafe defaults
+        run: python scripts/check_repository_security.py
